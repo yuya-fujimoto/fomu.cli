@@ -2,6 +2,8 @@
 
 CLI ambient music player for focus. Plays curated tracks from Scott Buckley's Creative Commons library.
 
+![Fomu CLI](https://github.com/user-attachments/assets/5c1cbb8c-dab1-47b7-a5b0-9456360d4a8f)
+
 ## Installation
 
 **Requirements:** Python 3.9+
