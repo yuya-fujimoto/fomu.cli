@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import queue
 import threading
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 import numpy as np
 import sounddevice as sd
@@ -12,6 +12,9 @@ from numpy.typing import NDArray
 
 from fomu.config import BUFFER_SIZE, CHANNELS, SAMPLE_RATE, DEFAULT_VOLUME
 from fomu.engine.analyzer import AudioAnalyzer
+
+if TYPE_CHECKING:
+    from fomu.tracks.loader import StreamingAudioSource
 
 
 class AudioPlayer:
@@ -45,6 +48,9 @@ class AudioPlayer:
         self._is_paused = False
         self._lock = threading.Lock()
 
+        # Streaming source (memory-efficient alternative to full audio buffer)
+        self._streaming_source: StreamingAudioSource | None = None
+
         # Callback for analysis data
         self._analysis_callback: Callable[[float, NDArray[np.float32]], None] | None = None
         self._last_buffer: NDArray[np.float32] | None = None
@@ -60,18 +66,46 @@ class AudioPlayer:
         self._volume = max(0.0, min(1.0, value))
 
     def set_audio(self, audio: NDArray[np.float32]) -> None:
-        """Set the audio data to play.
+        """Set the audio data to play (loads entire track into memory).
+
+        For memory-efficient playback, use set_streaming_source() instead.
 
         Args:
             audio: Audio array (samples, channels) or (samples,) for mono
         """
         with self._lock:
+            # Close any existing streaming source
+            if self._streaming_source is not None:
+                self._streaming_source.close()
+                self._streaming_source = None
+
             # Ensure stereo
             if audio.ndim == 1:
                 audio = np.column_stack((audio, audio))
 
             self._current_audio = audio.astype(np.float32)
             self._audio_position = 0
+
+    def set_streaming_source(self, source: "StreamingAudioSource") -> None:
+        """Set a streaming audio source for memory-efficient playback.
+
+        Instead of loading the entire track into memory (~400MB),
+        this streams audio in chunks (~4MB at a time).
+
+        Args:
+            source: StreamingAudioSource to play from
+        """
+        with self._lock:
+            # Close any existing streaming source
+            if self._streaming_source is not None:
+                self._streaming_source.close()
+
+            # Clear buffered audio
+            self._current_audio = None
+            self._audio_position = 0
+
+            # Set new streaming source
+            self._streaming_source = source
 
     def queue_audio(self, audio: NDArray[np.float32]) -> None:
         """Queue audio for seamless playback.
@@ -104,35 +138,39 @@ class AudioPlayer:
             return
 
         with self._lock:
-            if self._current_audio is None:
+            # Streaming source mode (memory-efficient)
+            if self._streaming_source is not None:
+                music = self._streaming_source.read(frames)
+            # Legacy full-buffer mode
+            elif self._current_audio is not None:
+                # Get music frames
+                start = self._audio_position
+                end = start + frames
+
+                if end <= len(self._current_audio):
+                    music = self._current_audio[start:end].copy()
+                    self._audio_position = end
+                else:
+                    # End of current audio
+                    remaining = len(self._current_audio) - start
+                    if remaining > 0:
+                        music = np.zeros((frames, 2), dtype=np.float32)
+                        music[:remaining] = self._current_audio[start:]
+                    else:
+                        music = np.zeros((frames, 2), dtype=np.float32)
+
+                    # Try to get next audio from queue
+                    try:
+                        self._current_audio = self._audio_queue.get_nowait()
+                        self._audio_position = frames - remaining
+                        if remaining < frames and len(self._current_audio) > 0:
+                            to_fill = min(frames - remaining, len(self._current_audio))
+                            music[remaining:remaining + to_fill] = self._current_audio[:to_fill]
+                    except queue.Empty:
+                        self._audio_position = len(self._current_audio)
+            else:
                 outdata.fill(0)
                 return
-
-            # Get music frames
-            start = self._audio_position
-            end = start + frames
-
-            if end <= len(self._current_audio):
-                music = self._current_audio[start:end].copy()
-                self._audio_position = end
-            else:
-                # End of current audio
-                remaining = len(self._current_audio) - start
-                if remaining > 0:
-                    music = np.zeros((frames, 2), dtype=np.float32)
-                    music[:remaining] = self._current_audio[start:]
-                else:
-                    music = np.zeros((frames, 2), dtype=np.float32)
-
-                # Try to get next audio from queue
-                try:
-                    self._current_audio = self._audio_queue.get_nowait()
-                    self._audio_position = frames - remaining
-                    if remaining < frames and len(self._current_audio) > 0:
-                        to_fill = min(frames - remaining, len(self._current_audio))
-                        music[remaining:remaining + to_fill] = self._current_audio[:to_fill]
-                except queue.Empty:
-                    self._audio_position = len(self._current_audio)
 
         # Apply volume
         output = music * self._volume
@@ -198,11 +236,15 @@ class AudioPlayer:
     @property
     def position(self) -> float:
         """Get current position in seconds."""
+        if self._streaming_source is not None:
+            return self._streaming_source.position / self.sample_rate
         return self._audio_position / self.sample_rate
 
     @property
     def duration(self) -> float:
         """Get total duration in seconds."""
+        if self._streaming_source is not None:
+            return self._streaming_source.duration
         if self._current_audio is None:
             return 0.0
         return len(self._current_audio) / self.sample_rate
@@ -210,9 +252,17 @@ class AudioPlayer:
     @property
     def progress(self) -> float:
         """Get playback progress (0-1)."""
+        if self._streaming_source is not None:
+            return self._streaming_source.progress
         if self._current_audio is None or len(self._current_audio) == 0:
             return 0.0
         return self._audio_position / len(self._current_audio)
+
+    def is_stream_finished(self) -> bool:
+        """Check if streaming source has finished playing."""
+        if self._streaming_source is not None:
+            return self._streaming_source.is_finished()
+        return False
 
     def set_analysis_callback(
         self,

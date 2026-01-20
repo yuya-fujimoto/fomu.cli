@@ -22,6 +22,10 @@ BARS_COUNT = 16
 CROSSFADE_DURATION = 3.0  # Seconds for crossfade between tracks
 TRACK_PRELOAD_TIME = 10.0  # Seconds before track end to start loading next
 
+# Memory settings
+MAX_CACHED_TRACKS = 3  # Maximum number of tracks to keep in LRU cache (~1.2 GB max)
+STREAMING_CHUNK_SECONDS = 10.0  # Seconds of audio per streaming chunk (~4 MB per chunk)
+
 # Paths
 def get_tracks_dir() -> Path:
     """Get the tracks directory, creating it if necessary."""

@@ -78,6 +78,10 @@ class FomuApp:
         # Terminal focus state (for pausing UI when not visible)
         self._terminal_focused = True
 
+        # Pre-cached static UI text elements (reduce allocations in render loop)
+        self._cached_attribution = self._create_attribution_text()
+        self._cached_controls_template = self._create_controls_template()
+
 
     def _create_visualizer(self):
         """Create visualizer based on mode."""
@@ -85,6 +89,35 @@ class FomuApp:
         if viz_cls:
             return viz_cls(theme=self.theme)
         return WaveVisualizer(theme=self.theme)
+
+    def _create_attribution_text(self) -> Text:
+        """Create cached attribution text (static, never changes)."""
+        attribution = Text()
+        attribution.append("  Music by Scott Buckley (CC-BY 4.0)", style="dim")
+        attribution.append(" — ", style="dim")
+        attribution.append(
+            "support him",
+            style="dim underline link https://www.scottbuckley.com.au/library/donate/",
+        )
+        return attribution
+
+    def _create_controls_template(self) -> Text:
+        """Create cached controls template (static parts only)."""
+        controls = Text()
+        controls.append("  │  ", style="dim")
+        controls.append("[space]", style="bold")
+        controls.append(" pause  ", style="dim")
+        controls.append("[+/-]", style="bold")
+        controls.append(" vol  ", style="dim")
+        controls.append("[n]", style="bold")
+        controls.append(" skip  ", style="dim")
+        controls.append("[p]", style="bold")
+        controls.append(" preset  ", style="dim")
+        controls.append("[v]", style="bold")
+        controls.append(" viz  ", style="dim")
+        controls.append("[q]", style="bold")
+        controls.append(" quit", style="dim")
+        return controls
 
     def cycle_visualization(self) -> str:
         """Cycle to next visualization mode."""
@@ -152,7 +185,7 @@ class FomuApp:
         self._preset_switch_pending = None
 
         # Restart playlist with new preset's pools
-        self._playlist_iter = self.loader.playlist_iterator(self.preset.pools, shuffle=True)
+        self._playlist_iter = self.loader.streaming_playlist_iterator(self.preset.pools, shuffle=True)
 
         # Load a track from the new preset
         self._load_next_track()
@@ -252,30 +285,13 @@ class FomuApp:
             controls.append("[esc/q]", style="bold")
             controls.append(" cancel", style="dim")
         else:
+            # Use cached template for static parts, only create dynamic volume text
             controls = Text()
             controls.append(f"  Vol: {volume_pct}%", style="cyan")
-            controls.append("  │  ", style="dim")
-            controls.append("[space]", style="bold")
-            controls.append(" pause  ", style="dim")
-            controls.append("[+/-]", style="bold")
-            controls.append(" vol  ", style="dim")
-            controls.append("[n]", style="bold")
-            controls.append(" skip  ", style="dim")
-            controls.append("[p]", style="bold")
-            controls.append(" preset  ", style="dim")
-            controls.append("[v]", style="bold")
-            controls.append(" viz  ", style="dim")
-            controls.append("[q]", style="bold")
-            controls.append(" quit", style="dim")
+            controls.append_text(self._cached_controls_template)
 
-        # Attribution
-        attribution = Text()
-        attribution.append("  Music by Scott Buckley (CC-BY 4.0)", style="dim")
-        attribution.append(" — ", style="dim")
-        attribution.append(
-            "support him",
-            style="dim underline link https://www.scottbuckley.com.au/library/donate/",
-        )
+        # Use cached attribution (completely static)
+        attribution = self._cached_attribution
 
         # Combine into layout
         content = Text()
@@ -298,14 +314,14 @@ class FomuApp:
         )
 
     def _load_next_track(self) -> bool:
-        """Load the next track from playlist."""
+        """Load the next track from playlist using streaming."""
         if self._playlist_iter is None:
             return False
 
         try:
-            track, audio = next(self._playlist_iter)
+            track, stream = next(self._playlist_iter)
             self._current_track = track
-            self.player.set_audio(audio)
+            self.player.set_streaming_source(stream)
             return True
         except StopIteration:
             return False
@@ -349,7 +365,7 @@ class FomuApp:
                         break
 
                 # Restart playlist with new preset's pools
-                self._playlist_iter = self.loader.playlist_iterator(self.preset.pools, shuffle=True)
+                self._playlist_iter = self.loader.streaming_playlist_iterator(self.preset.pools, shuffle=True)
 
                 # Load a track from the new preset
                 self._load_next_track()
@@ -368,7 +384,7 @@ class FomuApp:
         )
 
         # Create playlist with available tracks
-        self._playlist_iter = self.loader.playlist_iterator(self.preset.pools, shuffle=True)
+        self._playlist_iter = self.loader.streaming_playlist_iterator(self.preset.pools, shuffle=True)
 
         # Load first track
         if not self._load_next_track():
@@ -401,11 +417,11 @@ class FomuApp:
                     if self._terminal_focused:
                         live.update(self._render_ui())
 
-                    # Check if track ended
-                    if self.player.progress >= 0.99:
+                    # Check if track ended (streaming or progress-based)
+                    if self.player.is_stream_finished() or self.player.progress >= 0.99:
                         if not self._load_next_track():
                             # Restart playlist
-                            self._playlist_iter = self.loader.playlist_iterator(
+                            self._playlist_iter = self.loader.streaming_playlist_iterator(
                                 self.preset.pools, shuffle=True
                             )
                             self._load_next_track()

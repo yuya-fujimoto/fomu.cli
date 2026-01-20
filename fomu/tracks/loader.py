@@ -7,15 +7,185 @@ import os
 import random
 import sys
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Iterator
 
 import numpy as np
 import soundfile as sf
+from cachetools import LRUCache
 from numpy.typing import NDArray
 
-from fomu.config import SAMPLE_RATE, get_tracks_dir
+from fomu.config import MAX_CACHED_TRACKS, SAMPLE_RATE, STREAMING_CHUNK_SECONDS, get_tracks_dir
 from fomu.tracks.catalog import Track, TrackCatalog, TrackPool
+
+
+class StreamingAudioSource:
+    """Memory-efficient streaming audio source.
+
+    Instead of loading entire tracks into memory (~400MB per track),
+    this class streams audio in chunks (~4MB per chunk at 10 seconds).
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        target_sample_rate: int = SAMPLE_RATE,
+        chunk_seconds: float = STREAMING_CHUNK_SECONDS,
+    ) -> None:
+        """Initialize streaming audio source.
+
+        Args:
+            path: Path to audio file
+            target_sample_rate: Target sample rate for resampling
+            chunk_seconds: Seconds of audio per chunk
+        """
+        self._path = path
+        self._target_sample_rate = target_sample_rate
+        self._chunk_frames = int(target_sample_rate * chunk_seconds)
+
+        # Open file for streaming
+        self._file = sf.SoundFile(path)
+        self._source_sample_rate = self._file.samplerate
+        self._total_source_frames = self._file.frames
+        self._channels = self._file.channels
+
+        # Calculate total frames after resampling
+        if self._source_sample_rate != target_sample_rate:
+            self._resample_ratio = target_sample_rate / self._source_sample_rate
+            self._total_frames = int(self._total_source_frames * self._resample_ratio)
+        else:
+            self._resample_ratio = 1.0
+            self._total_frames = self._total_source_frames
+
+        # Current position in target sample rate frames
+        self._position = 0
+
+        # Preloaded chunk buffer (stores next chunk for seamless playback)
+        self._current_chunk: NDArray[np.float32] | None = None
+        self._chunk_position = 0  # Position within current chunk
+
+        # Lock for thread-safe access
+        self._lock = threading.Lock()
+
+        # Preload first chunk
+        self._preload_next_chunk()
+
+    @property
+    def total_frames(self) -> int:
+        """Total frames in target sample rate."""
+        return self._total_frames
+
+    @property
+    def position(self) -> int:
+        """Current position in frames."""
+        return self._position
+
+    @property
+    def duration(self) -> float:
+        """Duration in seconds."""
+        return self._total_frames / self._target_sample_rate
+
+    @property
+    def progress(self) -> float:
+        """Playback progress (0-1)."""
+        if self._total_frames == 0:
+            return 0.0
+        return self._position / self._total_frames
+
+    def _preload_next_chunk(self) -> None:
+        """Load the next chunk of audio from file."""
+        if self._file.tell() >= self._total_source_frames:
+            # End of file
+            self._current_chunk = None
+            return
+
+        # Calculate how many source frames to read
+        source_chunk_frames = int(self._chunk_frames / self._resample_ratio) if self._resample_ratio != 1.0 else self._chunk_frames
+
+        # Read from file
+        audio = self._file.read(source_chunk_frames, dtype=np.float32)
+
+        if len(audio) == 0:
+            self._current_chunk = None
+            return
+
+        # Resample if needed
+        if self._resample_ratio != 1.0:
+            new_length = int(len(audio) * self._resample_ratio)
+            if new_length > 0:
+                indices = np.linspace(0, len(audio) - 1, new_length)
+                if audio.ndim == 2:
+                    audio = np.column_stack([
+                        np.interp(indices, np.arange(len(audio)), audio[:, c])
+                        for c in range(audio.shape[1])
+                    ])
+                else:
+                    audio = np.interp(indices, np.arange(len(audio)), audio)
+
+        # Ensure stereo
+        if audio.ndim == 1:
+            audio = np.column_stack((audio, audio))
+
+        self._current_chunk = audio.astype(np.float32)
+        self._chunk_position = 0
+
+    def read(self, frames: int) -> NDArray[np.float32]:
+        """Read audio frames from the stream.
+
+        Args:
+            frames: Number of frames to read
+
+        Returns:
+            Audio array (frames, 2) in float32
+        """
+        with self._lock:
+            if self._current_chunk is None:
+                # End of stream
+                return np.zeros((frames, 2), dtype=np.float32)
+
+            output = np.zeros((frames, 2), dtype=np.float32)
+            output_pos = 0
+
+            while output_pos < frames:
+                if self._current_chunk is None:
+                    break
+
+                # How much can we read from current chunk?
+                available = len(self._current_chunk) - self._chunk_position
+                needed = frames - output_pos
+                to_read = min(available, needed)
+
+                if to_read > 0:
+                    output[output_pos:output_pos + to_read] = self._current_chunk[
+                        self._chunk_position:self._chunk_position + to_read
+                    ]
+                    self._chunk_position += to_read
+                    output_pos += to_read
+                    self._position += to_read
+
+                # Need more data?
+                if self._chunk_position >= len(self._current_chunk):
+                    self._preload_next_chunk()
+
+            return output
+
+    def is_finished(self) -> bool:
+        """Check if stream has reached the end."""
+        with self._lock:
+            return self._current_chunk is None and self._position >= self._total_frames - 1
+
+    def close(self) -> None:
+        """Close the audio file."""
+        with self._lock:
+            if self._file is not None:
+                self._file.close()
+                self._file = None
+                self._current_chunk = None
+
+    def __del__(self) -> None:
+        """Cleanup on deletion."""
+        self.close()
 
 
 @contextlib.contextmanager
@@ -44,7 +214,7 @@ class TrackLoader:
         """
         self.tracks_dir = tracks_dir or get_tracks_dir()
         self.catalog = TrackCatalog()
-        self._cache: dict[str, NDArray[np.float32]] = {}
+        self._cache: LRUCache[str, NDArray[np.float32]] = LRUCache(maxsize=MAX_CACHED_TRACKS)
         self._cache_lock = threading.Lock()
         self._preload_thread: threading.Thread | None = None
 
@@ -204,3 +374,57 @@ class TrackLoader:
             return info.duration
         except Exception:
             return None
+
+    def open_stream(self, track: Track) -> StreamingAudioSource | None:
+        """Open a track as a streaming audio source.
+
+        This is more memory-efficient than load_track() as it only keeps
+        one chunk (~10 seconds) in memory at a time instead of the entire track.
+
+        Args:
+            track: Track to open
+
+        Returns:
+            StreamingAudioSource or None if failed
+        """
+        path = self.get_track_path(track)
+        if not path.exists():
+            return None
+
+        try:
+            with suppress_stderr():
+                return StreamingAudioSource(path, target_sample_rate=SAMPLE_RATE)
+        except Exception:
+            return None
+
+    def streaming_playlist_iterator(
+        self,
+        pools: list[TrackPool],
+        shuffle: bool = True,
+        loop: bool = True,
+    ) -> Iterator[tuple[Track, StreamingAudioSource]]:
+        """Create an infinite iterator over tracks using streaming.
+
+        More memory-efficient than playlist_iterator() as tracks are streamed
+        rather than fully loaded into memory.
+
+        Args:
+            pools: Track pools to include
+            shuffle: Shuffle tracks
+            loop: Loop playlist infinitely
+
+        Yields:
+            Tuples of (Track, StreamingAudioSource)
+        """
+        while True:
+            playlist = self.create_playlist(pools, shuffle)
+            if not playlist:
+                return
+
+            for track in playlist:
+                stream = self.open_stream(track)
+                if stream is not None:
+                    yield (track, stream)
+
+            if not loop:
+                break

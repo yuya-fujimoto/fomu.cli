@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 
 import numpy as np
 from rich.console import RenderableType
@@ -26,12 +27,11 @@ class WaveVisualizer(BaseVisualizer):
     ) -> None:
         super().__init__(width, height, theme)
         self._phase = 0.0
-        self._history: list[float] = [0.0] * width
+        self._history: deque[float] = deque([0.0] * width, maxlen=width)
 
     def update(self, rms: float, bands: np.ndarray) -> None:
         super().update(rms, bands)
-        self._history.pop(0)
-        self._history.append(rms)
+        self._history.append(rms)  # deque auto-pops from left when maxlen reached
         self._phase += 0.1
 
     def render(self) -> RenderableType:
@@ -83,12 +83,11 @@ class SimpleWaveVisualizer(BaseVisualizer):
         theme: str = "cyan",
     ) -> None:
         super().__init__(width, height, theme)
-        self._history: list[float] = [0.0] * width
+        self._history: deque[float] = deque([0.0] * width, maxlen=width)
 
     def update(self, rms: float, bands: np.ndarray) -> None:
         super().update(rms, bands)
-        self._history.pop(0)
-        self._history.append(rms)
+        self._history.append(rms)  # deque auto-pops from left when maxlen reached
 
     def render(self) -> RenderableType:
         """Render the simple wave."""
