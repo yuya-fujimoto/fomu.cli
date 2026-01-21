@@ -6,25 +6,13 @@ CLI ambient music player for focus. Plays curated tracks from Scott Buckley's Cr
 
 ## Installation
 
-**Requirements:** Python 3.9+
-
-### From source
+**Requirements:** Rust 1.70+
 
 ```bash
-git clone https://github.com/yuya-fujimoto/fomu.cli.git
-cd fomu
-pip install .
+cargo install --path .
 ```
 
 On first run, Fomu will automatically download one track to get started, then continue downloading the rest in the background.
-
-### For development
-
-```bash
-git clone https://github.com/yuya-fujimoto/fomu.cli.git
-cd fomu
-pip install -e ".[dev]"
-```
 
 ## Usage
 
@@ -32,18 +20,11 @@ pip install -e ".[dev]"
 # Start with defaults
 fomu
 
-# Use a specific preset (different track pools)
+# Use a specific preset
 fomu --preset deep
 fomu --preset creative
 fomu --preset morning
 
-# Change visualization
-fomu --viz bars
-fomu --viz minimal
-
-# Set color theme
-fomu --theme purple
-fomu --theme warm
 ```
 
 ### Interactive Controls
@@ -53,7 +34,7 @@ fomu --theme warm
 | `Space` | Pause/Resume |
 | `+/-` | Volume up/down |
 | `n` | Skip track |
-| `v` | Cycle visualization |
+| `p` | Select preset |
 | `q` | Quit |
 
 ## Presets
