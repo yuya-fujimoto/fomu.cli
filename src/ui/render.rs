@@ -25,7 +25,7 @@ pub fn render_ui(frame: &mut Frame, app: &App) {
             Constraint::Length(1),  // Spacer
             Constraint::Length(1),  // Track Info
             Constraint::Length(1),  // Controls
-            Constraint::Length(1),  // Attribution
+            Constraint::Length(3),  // Attribution
         ])
         .split(area);
 
@@ -77,7 +77,17 @@ fn render_visualization(frame: &mut Frame, area: Rect, app: &App) {
     let lines = app.visualizer().render_sized(app.rms(), app.bands(), width, height);
     let viz_lines: Vec<Line> = lines
         .iter()
-        .map(|s| Line::from(Span::styled(s.clone(), Style::default().fg(PRIMARY_COLOR))))
+        .enumerate()
+        .map(|(row, s)| {
+            // Gradient from cyan (top) to muted blue-gray (bottom)
+            let t = row as f32 / height.max(1) as f32;
+            let color = Color::Rgb(
+                (0.0 + t * 100.0) as u8,    // R: 0 → 100
+                (255.0 - t * 135.0) as u8,  // G: 255 → 120
+                (255.0 - t * 115.0) as u8,  // B: 255 → 140
+            );
+            Line::from(Span::styled(s.clone(), Style::default().fg(color)))
+        })
         .collect();
     frame.render_widget(Paragraph::new(viz_lines), area);
 }
@@ -148,11 +158,29 @@ fn render_preset_selection(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_attribution(frame: &mut Frame, area: Rect) {
-    let spans = vec![
-        Span::styled("  Music by Scott Buckley (CC-BY 4.0) — support him at ", Style::default().fg(Color::DarkGray)),
-        Span::styled("scottbuckley.com.au", Style::default().fg(Color::DarkGray).add_modifier(Modifier::UNDERLINED)),
-    ];
+const SUPPORT_URL: &str = "https://www.scottbuckley.com.au/library/donate/";
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+/// Create OSC 8 hyperlink text (clickable in supported terminals).
+fn hyperlink(url: &str, text: &str) -> String {
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
+}
+
+fn render_attribution(frame: &mut Frame, area: Rect) {
+    let link_text = hyperlink(SUPPORT_URL, "scottbuckley.com.au");
+    let line1 = Line::from(vec![
+        Span::styled("  Music by Scott Buckley (CC-BY 4.0)", Style::default().fg(Color::DarkGray)),
+    ]);
+    let line2 = Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled("[s]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(" support him at ", Style::default().fg(Color::DarkGray)),
+        Span::styled(link_text, Style::default().fg(Color::DarkGray).add_modifier(Modifier::UNDERLINED)),
+    ]);
+
+    frame.render_widget(Paragraph::new(vec![Line::default(), line1, line2]), area);
+}
+
+/// Open the support URL in the default browser.
+pub fn open_support_url() {
+    let _ = open::that(SUPPORT_URL);
 }

@@ -17,17 +17,23 @@ impl Visualizer {
 
     /// Render bar visualization with dynamic sizing.
     pub fn render_sized(&self, _rms: f32, bands: &[f32], width: usize, height: usize) -> Vec<String> {
-        let num_bars = bands.len().min(16);
-        let bar_width = if num_bars > 0 {
-            (width.saturating_sub(num_bars - 1)) / num_bars
-        } else {
-            1
-        }.max(1);
+        let num_bars = bands.len();
+
+        // Fixed 1-space gap between bars, bar width capped for tighter look
+        let gap = 1;
+        let total_gaps = (num_bars - 1) * gap;
+        let bar_width = (width.saturating_sub(total_gaps) / num_bars).clamp(1, 2);
 
         let mut lines = Vec::with_capacity(height);
 
+        let left_padding = 6;
+
         for row in 0..height {
             let mut row_chars = String::with_capacity(width);
+            // Add left padding
+            for _ in 0..left_padding {
+                row_chars.push(' ');
+            }
             let threshold = 1.0 - (row as f32 / height as f32);
 
             for (i, &level) in bands.iter().take(num_bars).enumerate() {
@@ -45,7 +51,9 @@ impl Visualizer {
                     row_chars.push(ch);
                 }
                 if i < num_bars - 1 {
-                    row_chars.push(' ');
+                    for _ in 0..gap {
+                        row_chars.push(' ');
+                    }
                 }
             }
             lines.push(row_chars);

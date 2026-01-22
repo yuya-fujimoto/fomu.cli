@@ -15,7 +15,7 @@ use crate::audio::{AudioAnalyzer, AudioDecoder, AudioPlayer};
 use crate::presets::{get_preset, Preset, PRESETS};
 use crate::tracks::{DownloadProgress, Track, TrackDownloader, TrackLoader};
 use crate::ui::visualizers::Visualizer;
-use crate::ui::render::render_ui;
+use crate::ui::render::{render_ui, open_support_url};
 
 /// Main application state.
 pub struct App {
@@ -268,6 +268,9 @@ impl App {
                 }
                 KeyCode::Char('n') => {
                     self.skip_track();
+                }
+                KeyCode::Char('s') => {
+                    open_support_url();
                 }
                 KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') | KeyCode::Up => {
                     self.player.volume_up();

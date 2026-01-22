@@ -9,7 +9,7 @@ use rustfft::{num_complex::Complex, FftPlanner};
 const FFT_SIZE: usize = 2048;
 
 /// Number of frequency bands for visualization
-const NUM_BANDS: usize = 16;
+const NUM_BANDS: usize = 64;
 
 /// Analysis ring buffer size - enough for a few FFT windows
 pub const ANALYSIS_BUFFER_SIZE: usize = FFT_SIZE * 4;
